@@ -65,6 +65,14 @@ export class PixelAgentsServer {
     store?: AgentStateStore;
     runtime?: AgentRuntime;
     embedded?: boolean;
+    /** Whether a compatible registered server may be reused. Default: true. */
+    reuseExisting?: boolean;
+    /** Authentication token to use. Generated when omitted. */
+    token?: string;
+    /** Suppress HTTP request logging even in standalone mode. */
+    quiet?: boolean;
+    /** Require the configured token when requesting the standalone SPA entry. */
+    requireSpaToken?: boolean;
     host?: string;
     port?: number;
     staticDir?: string;
@@ -73,6 +81,7 @@ export class PixelAgentsServer {
     onReloadAssets?: ReloadAssetsSideEffect;
     streamProviders?: readonly StreamProvider[];
     onStreamEvent?: StreamEventSink;
+    onClientCountChange?: (count: number) => void;
   }): Promise<ServerConfig> {
     const embedded = options?.embedded ?? true;
     const wantsSpa = !embedded;
@@ -84,7 +93,8 @@ export class PixelAgentsServer {
     // server (blank page). Prune dead entries first so a crashed server's
     // stale file never blocks discovery of a live one.
     const registry = this.readAndPruneRegistry();
-    const candidate = registry.find((e) => e.servesSpa === wantsSpa);
+    const candidate =
+      options?.reuseExisting === false ? undefined : registry.find((e) => e.servesSpa === wantsSpa);
     if (candidate) {
       this.config = candidate;
       this.ownsServer = false;
@@ -95,11 +105,13 @@ export class PixelAgentsServer {
     }
 
     // Start our own server
-    const token = crypto.randomUUID();
+    const token = options?.token ?? crypto.randomUUID();
     const store = options?.store;
 
     const { app, port } = await createHttpServer({
       embedded,
+      quiet: options?.quiet,
+      requireSpaToken: options?.requireSpaToken,
       host: options?.host,
       port: options?.port,
       token,
@@ -112,6 +124,7 @@ export class PixelAgentsServer {
       onReloadAssets: options?.onReloadAssets,
       streamProviders: options?.streamProviders,
       onStreamEvent: options?.onStreamEvent,
+      onClientCountChange: options?.onClientCountChange,
     });
 
     this.app = app;
@@ -139,17 +152,16 @@ export class PixelAgentsServer {
   }
 
   /** Stop the server and clean up its discovery records (only if we own them). */
-  stop(): void {
-    if (this.app) {
-      this.app.close();
-      this.app = null;
-    }
+  async stop(): Promise<void> {
+    const closing = this.app?.close();
+    this.app = null;
     if (this.ownsServer) {
       this.deleteServerJson();
       this.deleteRegistryEntry();
     }
     this.config = null;
     this.ownsServer = false;
+    await closing;
   }
 
   /** Returns the current server config, or null if not started. */

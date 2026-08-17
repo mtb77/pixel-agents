@@ -11,6 +11,7 @@ declare global {
         id: number;
         matrixEffect: 'spawn' | 'despawn' | null;
         agentName?: string;
+        displayName?: string;
         bubbleType: 'permission' | 'waiting' | null;
         waitingAwaitingInput?: boolean;
         isHeadless?: boolean;
@@ -125,6 +126,7 @@ export function installTestHooks(officeStateRef: { current: OfficeState | null }
       id: ch.id,
       matrixEffect: ch.matrixEffect,
       agentName: ch.agentName,
+      displayName: ch.displayName,
       bubbleType: ch.bubbleType,
       waitingAwaitingInput: ch.waitingAwaitingInput,
       isHeadless: ch.isHeadless,

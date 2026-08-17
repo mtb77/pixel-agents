@@ -4,7 +4,7 @@ import type { AgentEvent, StreamProvider } from '../../core/src/provider.js';
  *  originating provider's id. Wired by the composition root (never a Claude
  *  heuristic/transcript-fallback path -- those only ever see the bound
  *  HookProvider). */
-export type StreamEventSink = (providerId: string, event: AgentEvent) => void;
+export type StreamEventSink = (providerId: string, sessionId: string, event: AgentEvent) => void;
 
 /**
  * Gates StreamProvider.start()/dispose() on office-client presence: starts
@@ -25,6 +25,7 @@ export class StreamProviderLifecycle {
   constructor(
     private readonly providers: readonly StreamProvider[],
     private readonly onEvent: StreamEventSink,
+    private readonly onClientCountChange?: (count: number) => void,
   ) {
     for (const provider of providers) {
       // Defensive: a caller wiring this up could pass a HookProvider by
@@ -41,6 +42,7 @@ export class StreamProviderLifecycle {
   /** Call when an office client (WS connection) is accepted. */
   clientConnected(): void {
     this.clientCount++;
+    this.onClientCountChange?.(this.clientCount);
     if (this.clientCount === 1) {
       this.chain = this.chain.then(() => this.startAll());
     }
@@ -49,6 +51,7 @@ export class StreamProviderLifecycle {
   /** Call when an office client (WS connection) closes. */
   clientDisconnected(): void {
     this.clientCount = Math.max(0, this.clientCount - 1);
+    this.onClientCountChange?.(this.clientCount);
     if (this.clientCount === 0) {
       this.chain = this.chain.then(() => this.stopAll());
     }
@@ -59,7 +62,9 @@ export class StreamProviderLifecycle {
     for (const provider of this.providers) {
       if (this.disposers.has(provider.id)) continue;
       try {
-        const dispose = await provider.start((event) => this.onEvent(provider.id, event));
+        const dispose = await provider.start((envelope) =>
+          this.onEvent(provider.id, envelope.sessionId, envelope.event),
+        );
         this.disposers.set(provider.id, dispose);
       } catch (err) {
         console.error(`[Pixel Agents] StreamProvider "${provider.id}" failed to start:`, err);

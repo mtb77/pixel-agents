@@ -20,6 +20,7 @@ import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
+import { StreamEventHandler } from './streamEventHandler.js';
 import type { StreamEventSink } from './streamProviderLifecycle.js';
 import { StreamProviderLifecycle } from './streamProviderLifecycle.js';
 import type { AgentState } from './types.js';
@@ -28,6 +29,10 @@ import type { AgentState } from './types.js';
 export interface HttpServerOptions {
   /** true = VS Code embedded mode (ephemeral port, no static, quiet logging) */
   embedded: boolean;
+  /** Suppress HTTP request logging even in standalone mode. */
+  quiet?: boolean;
+  /** Require the configured token when requesting the standalone SPA entry. */
+  requireSpaToken?: boolean;
   /** Host to bind to. Default: '127.0.0.1' */
   host?: string;
   /** Port to listen on. Default: 0 (auto-assign) */
@@ -56,6 +61,8 @@ export interface HttpServerOptions {
    *  the Claude heuristic/transcript-fallback paths -- those only ever see the
    *  bound HookProvider via onHookEvent. */
   onStreamEvent?: StreamEventSink;
+  /** Observes accepted office-client count changes without changing provider gating. */
+  onClientCountChange?: (count: number) => void;
 }
 
 /** Result of createHttpServer(). */
@@ -74,12 +81,25 @@ const startTime = Date.now();
  */
 export async function createHttpServer(options: HttpServerOptions): Promise<HttpServerHandle> {
   const app = Fastify({
-    logger: !options.embedded,
+    logger: !options.embedded && !options.quiet,
     bodyLimit: MAX_HOOK_BODY_SIZE,
   });
 
   await app.register(fastifyCors, { origin: true });
   await app.register(fastifyWebsocket);
+
+  if (!options.embedded && options.requireSpaToken) {
+    app.addHook('onRequest', async (request, reply) => {
+      const pathname = new URL(request.url, 'http://localhost').pathname;
+      if (
+        request.method === 'GET' &&
+        (pathname === '/' || pathname === '/index.html') &&
+        !standaloneTokenValid(request.url, options.token)
+      ) {
+        await reply.code(401).send('unauthorized');
+      }
+    });
+  }
 
   // Static SPA serving (standalone mode only)
   if (!options.embedded && options.staticDir) {
@@ -98,9 +118,19 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
   // One lifecycle gate per server instance (not per connection): shared across
   // every WebSocket handshake so the client count reflects the whole office,
   // not a single socket.
+  const streamSink: StreamEventSink | undefined =
+    options.onStreamEvent ??
+    (options.streamProviders && options.streamProviders.length > 0 && options.store
+      ? new StreamEventHandler(options.store, options.streamProviders).handleEvent
+      : undefined);
+
   const streamLifecycle =
     options.streamProviders && options.streamProviders.length > 0
-      ? new StreamProviderLifecycle(options.streamProviders, options.onStreamEvent ?? (() => {}))
+      ? new StreamProviderLifecycle(
+          options.streamProviders,
+          streamSink ?? (() => {}),
+          options.onClientCountChange,
+        )
       : null;
 
   registerHealthRoute(app);
@@ -201,6 +231,7 @@ function registerWebSocketRoute(
         type: 'agentCreated',
         id,
         folderName: agent.folderName,
+        displayName: agent.displayName,
         isExternal: agent.isExternal || undefined,
         isTeammate: agent.leadAgentId !== undefined || undefined,
         teammateName: agent.agentName,

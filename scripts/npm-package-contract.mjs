@@ -18,6 +18,7 @@ export const REQUIRED_PACKAGE_FILES = [
   'LICENSE',
   'README.md',
   'dist/cli.js',
+  'dist/stream-runtime.js',
   'dist/extension.js',
   'dist/hooks/claude-hook.js',
   'dist/webview/index.html',

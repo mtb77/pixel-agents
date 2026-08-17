@@ -151,7 +151,19 @@ export interface HookProvider {
   readonly team?: TeamProvider;
 }
 
-// ── Stream-based Provider (push-based external services) ─────
+export interface StreamSessionMeta {
+  /** Office area / room grouping key. Maps to AgentState.folderName. */
+  folderName?: string;
+  /** Character label, e.g. "Claude / feat/41024". */
+  displayName?: string;
+  /** Short marker for a session running off this machine, e.g. a host id. */
+  remoteLabel?: string;
+}
+
+export interface StreamEventEnvelope {
+  sessionId: string;
+  event: AgentEvent;
+}
 
 /**
  * Minimal integration boundary for a provider whose AgentEvents are pushed
@@ -175,10 +187,14 @@ export interface StreamProvider {
    *  / StreamProvider. Start at 1. */
   readonly protocolVersion: number;
 
-  /** Begin producing events, calling `emit` for each one. Resolves with a
-   *  disposer the server awaits once the last office client disconnects; the
+  /** Begin producing events, calling `emit` for each addressed envelope. Resolves
+   *  with a disposer the server awaits once the last office client disconnects; the
    *  provider must have stopped producing events by the time it resolves. */
-  start(emit: (event: AgentEvent) => void): Promise<() => Promise<void>>;
+  start(emit: (envelope: StreamEventEnvelope) => void): Promise<() => Promise<void>>;
+
+  /** Per-session display metadata. Called once when the server first materializes
+   *  an agent for a session. Optional, may return undefined. */
+  getSessionMeta?(sessionId: string): StreamSessionMeta | undefined;
 
   /** Tools that should show the "reading" character animation instead of
    *  "typing" (mirrors HookProvider.readingTools). */

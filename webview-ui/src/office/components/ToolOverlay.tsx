@@ -201,9 +201,10 @@ export function ToolOverlay({
           dotColor = 'var(--color-status-active)';
         }
 
-        // Team info
+        // Team info / Character label
         const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
-        const hasExtraLines = !!(ch.folderName || teamRoleLabel);
+        const characterLabel = teamRoleLabel || ch.displayName || null;
+        const hasExtraLines = !!(ch.folderName || characterLabel);
 
         // Context gauge. Every agent gets one — lead, teammate, adopted,
         // headless — as soon as it has taken a turn. Sub-agents never do: they
@@ -233,7 +234,7 @@ export function ToolOverlay({
                 />
               )}
               <div className="flex flex-col gap-0 overflow-hidden">
-                {teamRoleLabel && (
+                {characterLabel && (
                   <span
                     className="overflow-hidden text-ellipsis block leading-none"
                     style={{
@@ -242,7 +243,7 @@ export function ToolOverlay({
                       fontWeight: ch.isTeamLead ? 'bold' : undefined,
                     }}
                   >
-                    {teamRoleLabel}
+                    {characterLabel}
                   </span>
                 )}
                 <span

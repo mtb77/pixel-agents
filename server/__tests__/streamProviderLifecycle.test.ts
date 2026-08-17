@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentEvent, StreamProvider } from '../../core/src/provider.js';
+import type { AgentEvent, StreamEventEnvelope, StreamProvider } from '../../core/src/provider.js';
 import { StreamProviderLifecycle } from '../src/streamProviderLifecycle.js';
 
 /** Deferred so a test can control exactly when start()/dispose() settle. */
@@ -14,10 +14,10 @@ function makeProvider(
   id: string,
   overrides: Partial<StreamProvider> = {},
 ): StreamProvider & {
-  startCalls: Array<(event: AgentEvent) => void>;
+  startCalls: Array<(envelope: StreamEventEnvelope) => void>;
   disposeCalls: number;
 } {
-  const startCalls: Array<(event: AgentEvent) => void> = [];
+  const startCalls: Array<(envelope: StreamEventEnvelope) => void> = [];
   let disposeCalls = 0;
   return {
     kind: 'stream',
@@ -40,7 +40,7 @@ function makeProvider(
     },
     ...overrides,
   } as StreamProvider & {
-    startCalls: Array<(event: AgentEvent) => void>;
+    startCalls: Array<(envelope: StreamEventEnvelope) => void>;
     disposeCalls: number;
   };
 }
@@ -54,6 +54,21 @@ async function flush(times = 5): Promise<void> {
 }
 
 describe('StreamProviderLifecycle', () => {
+  it('reports every client-count change without altering the lifecycle gate', async () => {
+    const provider = makeProvider('bridge');
+    const onCount = vi.fn();
+    const lifecycle = new StreamProviderLifecycle([provider], vi.fn(), onCount);
+
+    lifecycle.clientConnected();
+    lifecycle.clientConnected();
+    lifecycle.clientDisconnected();
+    lifecycle.clientDisconnected();
+    await flush();
+
+    expect(onCount.mock.calls.map(([count]) => count)).toEqual([1, 2, 1, 0]);
+    expect(provider.startCalls.length).toBe(0);
+  });
+
   it('rejects a non-stream provider at construction (defensive guard)', () => {
     const notStream = { kind: 'hook', id: 'claude' } as unknown as StreamProvider;
     expect(() => new StreamProviderLifecycle([notStream], vi.fn())).toThrow(/expected "stream"/);
@@ -137,7 +152,7 @@ describe('StreamProviderLifecycle', () => {
     errorSpy.mockRestore();
   });
 
-  it('forwards emitted events to the sink tagged with the provider id', async () => {
+  it('forwards emitted events to the sink tagged with the provider id and session id', async () => {
     const provider = makeProvider('bridge');
     const sink = vi.fn();
     const lifecycle = new StreamProviderLifecycle([provider], sink);
@@ -147,9 +162,9 @@ describe('StreamProviderLifecycle', () => {
 
     const emit = provider.startCalls[0];
     const event: AgentEvent = { kind: 'turnEnd' };
-    emit(event);
+    emit({ sessionId: 'session-123', event });
 
-    expect(sink).toHaveBeenCalledWith('bridge', event);
+    expect(sink).toHaveBeenCalledWith('bridge', 'session-123', event);
   });
 
   it('serializes a rapid connect/disconnect/connect without double-starting or racing a stop', async () => {
@@ -204,7 +219,10 @@ describe('StreamProviderLifecycle', () => {
     lifecycle.clientConnected();
     await flush();
     const emit = provider.startCalls[0];
-    emit({ kind: 'toolStart', toolId: 't1', toolName: 'Read', input: { secret: 'leak' } });
+    emit({
+      sessionId: 's1',
+      event: { kind: 'toolStart', toolId: 't1', toolName: 'Read', input: { secret: 'leak' } },
+    });
     lifecycle.clientDisconnected();
     await flush();
 

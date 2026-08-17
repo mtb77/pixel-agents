@@ -223,6 +223,8 @@ export interface Character {
   matrixEffectSeeds: number[];
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Character display name / label */
+  displayName?: string;
   /** Headless agent: adopted from outside the office, so there is no terminal to
    *  focus. Rendered translucent. Teammates and sub-agents are never headless —
    *  clicking them reaches their lead's / parent's terminal. */

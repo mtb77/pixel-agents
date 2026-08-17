@@ -72,6 +72,21 @@ describe('PixelAgentsServer', () => {
     expect(config.startedAt).toBeGreaterThan(0);
   });
 
+  it('uses an injected token and can bypass compatible-server reuse', async () => {
+    const first = await server.start({ embedded: false, token: 'first-token' });
+    expect(first.token).toBe('first-token');
+
+    const dedicated = new PixelAgentsServer();
+    const second = await dedicated.start({
+      embedded: false,
+      reuseExisting: false,
+      token: 'injected-token',
+    });
+    expect(second.token).toBe('injected-token');
+    expect(second.port).not.toBe(first.port);
+    await dedicated.stop();
+  });
+
   // 2. Health endpoint returns 200 + uptime
   it('health endpoint returns 200 with uptime', async () => {
     const config = await server.start();

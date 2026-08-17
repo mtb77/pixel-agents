@@ -26,11 +26,15 @@ export interface PendingAgent {
   seatId?: string;
   folderName?: string;
   isHeadless?: boolean;
+  displayName?: string;
 }
 
 /** Minimal structural view of OfficeState this reconciler needs. */
 export interface ExistingAgentsOffice {
-  characters: { has: (id: number) => boolean };
+  characters: {
+    has: (id: number) => boolean;
+    get?: (id: number) => { displayName?: string } | undefined;
+  };
   addAgent: (
     id: number,
     preferredPalette?: number,
@@ -57,6 +61,7 @@ export function reconcileExistingAgents(
   layoutReady: boolean,
   pending: PendingAgent[],
   headlessAgents: Record<number, boolean> = {},
+  displayNames: Record<number, string> = {},
 ): boolean {
   let addedDirectly = false;
   for (const id of incoming) {
@@ -68,11 +73,16 @@ export function reconcileExistingAgents(
       seatId: m?.seatId,
       folderName: folderNames[id],
       isHeadless: headlessAgents[id] === true,
+      ...(displayNames[id] ? { displayName: displayNames[id] } : {}),
     };
     if (layoutReady) {
       if (!os.characters.has(p.id)) {
         os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
         if (p.isHeadless) os.setHeadless(p.id, true);
+        if (p.displayName && os.characters.get) {
+          const ch = os.characters.get(p.id);
+          if (ch) ch.displayName = p.displayName;
+        }
         addedDirectly = true;
       }
     } else {

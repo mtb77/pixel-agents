@@ -35,6 +35,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "dist/cli.js",
+    "dist/stream-runtime.js",
     "dist/extension.js",
     "dist/hooks/claude-hook.js",
     "dist/uninstall.js",

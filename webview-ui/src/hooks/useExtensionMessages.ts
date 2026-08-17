@@ -234,6 +234,10 @@ export function useExtensionMessages(
         for (const p of pendingAgents) {
           os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
           if (p.isHeadless) os.setHeadless(p.id, true);
+          if (p.displayName) {
+            const ch = os.characters.get(p.id);
+            if (ch) ch.displayName = p.displayName;
+          }
         }
         pendingAgents = [];
         layoutReadyRef.current = true;
@@ -247,6 +251,7 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number;
         const folderName = msg.folderName as string | undefined;
+        const displayName = msg.displayName as string | undefined;
         const isTeammate = msg.isTeammate as boolean | undefined;
         const teammateName = msg.teammateName as string | undefined;
         const teammateParentId = msg.parentAgentId as number | undefined;
@@ -285,6 +290,10 @@ export function useExtensionMessages(
           const hueShift = msg.hueShift as number | undefined;
           os.addAgent(id, palette, hueShift, undefined, undefined, folderName);
           noteFolderName(folderName);
+          const ch = os.characters.get(id);
+          if (ch && displayName) {
+            ch.displayName = displayName;
+          }
           if (isHeadlessAgent(msg.isExternal as boolean | undefined)) {
             os.setHeadless(id, true);
           }
@@ -321,6 +330,7 @@ export function useExtensionMessages(
         const incoming = msg.agents as number[];
         const meta = (msg.agentMeta || {}) as Record<number, ExistingAgentMeta>;
         const folderNames = (msg.folderNames || {}) as Record<number, string>;
+        const displayNames = (msg.displayNames || {}) as Record<number, string>;
         const externalAgents = (msg.externalAgents || {}) as Record<number, boolean>;
         const headlessAgents: Record<number, boolean> = {};
         for (const id of incoming) {
@@ -340,6 +350,7 @@ export function useExtensionMessages(
             layoutReadyRef.current,
             pendingAgents,
             headlessAgents,
+            displayNames,
           )
         ) {
           saveAgentSeats(os);

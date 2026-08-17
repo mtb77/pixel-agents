@@ -109,8 +109,26 @@ async function main() {
     copyAssets();
     buildHooks();
     await buildCli();
+    await buildStreamRuntime();
     await buildUninstall();
   }
+}
+
+/** Bundle the generic IPC composition host for an external stream provider. */
+async function buildStreamRuntime() {
+  await esbuild.build({
+    entryPoints: ['server/src/stream-runtime.ts'],
+    bundle: true,
+    format: 'cjs',
+    minify: production,
+    sourcemap: !production,
+    platform: 'node',
+    outfile: 'dist/stream-runtime.js',
+    external: ['fastify', '@fastify/websocket', '@fastify/static', '@fastify/cors'],
+    define: versionDefine,
+    logLevel: 'silent',
+  });
+  if (!production) console.log('[build] Stream runtime bundled: dist/stream-runtime.js');
 }
 
 /** Bundle the vscode:uninstall hook — plain Node, runs after extension removal. */

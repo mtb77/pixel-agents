@@ -182,6 +182,9 @@ components:
           type: integer
         folderName:
           type: string
+        displayName:
+          type: string
+          description: Character display name / label.
         isExternal:
           type: boolean
         palette:
@@ -235,6 +238,11 @@ components:
         folderNames:
           type: object
           description: Map of agent ID (string) to workspace folder name.
+          additionalProperties:
+            type: string
+        displayNames:
+          type: object
+          description: Map of agent ID (string) to display name.
           additionalProperties:
             type: string
         externalAgents:

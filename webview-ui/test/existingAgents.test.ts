@@ -177,3 +177,36 @@ test('layout ready: agent with no metadata is still added with undefined fields'
     },
   ]);
 });
+
+// ── displayName metadata ───────────────────────────────────────
+
+test('layout ready: assigns displayName to restored character', () => {
+  const charMap = new Map<number, { displayName?: string }>();
+  const os = {
+    ...fakeOffice(),
+    characters: {
+      has: (id: number) => charMap.has(id),
+      get: (id: number) => charMap.get(id),
+    },
+    addAgent: (id: number) => {
+      charMap.set(id, {});
+    },
+  };
+  const pending: PendingAgent[] = [];
+  const displayNames: Record<number, string> = { 8: 'Claude / feat/room' };
+
+  const addedDirectly = reconcileExistingAgents(os, [8], {}, {}, true, pending, {}, displayNames);
+
+  assert.equal(addedDirectly, true);
+  assert.equal(charMap.get(8)?.displayName, 'Claude / feat/room');
+});
+
+test('layout not ready: buffers displayName on PendingAgent', () => {
+  const os = fakeOffice();
+  const pending: PendingAgent[] = [];
+  const displayNames: Record<number, string> = { 9: 'Codex / main' };
+
+  reconcileExistingAgents(os, [9], {}, {}, false, pending, {}, displayNames);
+
+  assert.equal(pending[0]?.displayName, 'Codex / main');
+});
