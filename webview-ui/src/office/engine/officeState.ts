@@ -1,7 +1,5 @@
 import { pickDiversePalette } from '../../../../core/src/paletteUtils.js';
 import {
-  AUTO_ON_FACING_DEPTH,
-  AUTO_ON_SIDE_DEPTH,
   CHARACTER_HIT_HALF_WIDTH,
   CHARACTER_HIT_HEIGHT,
   CHARACTER_SITTING_OFFSET_PX,
@@ -20,6 +18,7 @@ import { getAnimationFrames, getCatalogEntry, getOnStateType } from '../layout/f
 import {
   createDefaultLayout,
   getBlockedTiles,
+  getSeatFacingTiles,
   layoutToFurnitureInstances,
   layoutToSeats,
   layoutToTileMap,
@@ -43,13 +42,7 @@ import { advanceMatrixEffect, startMatrixEffect } from './matrixEffectState.js';
 import { createPet, updatePet } from './petEntity.js';
 import { anchorTile, closestFreeSeat } from './seatPlacement.js';
 
-/** Internal helper: facing-tile coords for a seat. Returns null for invalid direction. */
-function seatFacingOffset(direction: Direction): { dCol: number; dRow: number } {
-  if (direction === Direction.RIGHT) return { dCol: 1, dRow: 0 };
-  if (direction === Direction.LEFT) return { dCol: -1, dRow: 0 };
-  if (direction === Direction.DOWN) return { dCol: 0, dRow: 1 };
-  return { dCol: 0, dRow: -1 };
-}
+const ACTIVITY_TRANSITION_DELAY_SEC = 5;
 
 export class OfficeState {
   layout: OfficeLayout;
@@ -71,6 +64,13 @@ export class OfficeState {
   /** Reverse lookup: sub-agent character ID → parent info */
   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string }> = new Map();
   private nextSubagentId = -1;
+  private activityTransitionTimers = new Map<number, number>();
+  private pendingActivityStates = new Map<number, boolean>();
+
+  private scheduleActivityReconciliation(id: number, active: boolean): void {
+    this.pendingActivityStates.set(id, active);
+    this.activityTransitionTimers.set(id, ACTIVITY_TRANSITION_DELAY_SEC);
+  }
 
   /**
    * folderName → list of Area labels that workspace folder belongs to.
@@ -267,21 +267,6 @@ export class OfficeState {
     return result;
   }
 
-  /** Collect every tile occupied by electronics furniture (PCs, monitors, etc.). */
-  private buildElectronicsTileSet(): Set<string> {
-    const out = new Set<string>();
-    for (const item of this.layout.furniture) {
-      const entry = getCatalogEntry(item.type);
-      if (!entry || entry.category !== 'electronics') continue;
-      for (let dr = 0; dr < entry.footprintH; dr++) {
-        for (let dc = 0; dc < entry.footprintW; dc++) {
-          out.add(`${item.col + dc},${item.row + dr}`);
-        }
-      }
-    }
-    return out;
-  }
-
   /** Find the area label assigned to a seat's tile, or null. Public for e2e
    *  observability (getAgentSeats hook reads a seated agent's area). */
   seatZone(uid: string): string | null {
@@ -295,44 +280,17 @@ export class OfficeState {
   }
 
   /**
-   * Does this seat face an electronics tile (PC, monitor)? Mirrors the
-   * forward-and-flanking scan used by furniture auto-state.
-   */
-  private isSeatFacingElectronics(seat: Seat, electronicsTiles: Set<string>): boolean {
-    const { dCol, dRow } = seatFacingOffset(seat.facingDir);
-    for (let d = 1; d <= AUTO_ON_FACING_DEPTH; d++) {
-      const tileCol = seat.seatCol + dCol * d;
-      const tileRow = seat.seatRow + dRow * d;
-      if (electronicsTiles.has(`${tileCol},${tileRow}`)) return true;
-      if (dCol !== 0) {
-        if (
-          electronicsTiles.has(`${tileCol},${tileRow - 1}`) ||
-          electronicsTiles.has(`${tileCol},${tileRow + 1}`)
-        ) {
-          return true;
-        }
-      } else if (
-        electronicsTiles.has(`${tileCol - 1},${tileRow}`) ||
-        electronicsTiles.has(`${tileCol + 1},${tileRow}`)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
    * Random-pick a seat from a candidate list, biased toward seats that face an
    * electronics tile. Returns null when the candidate list is empty.
    */
-  private pickFromSeats(seatUids: string[], electronicsTiles: Set<string>): string | null {
+  private pickFromSeats(seatUids: string[]): string | null {
     if (seatUids.length === 0) return null;
     const pcSeats: string[] = [];
     const otherSeats: string[] = [];
     for (const uid of seatUids) {
       const seat = this.seats.get(uid);
       if (!seat) continue;
-      if (this.isSeatFacingElectronics(seat, electronicsTiles)) {
+      if (seat.hasComputer) {
         pcSeats.push(uid);
       } else {
         otherSeats.push(uid);
@@ -358,7 +316,6 @@ export class OfficeState {
    * unzoned seats from a layout without `areaTiles`, which is every seat).
    */
   private findFreeSeat(folderName?: string): string | null {
-    const electronicsTiles = this.buildElectronicsTileSet();
     const freeSeats: string[] = [];
     for (const [uid, seat] of this.seats) {
       if (!seat.assigned) freeSeats.push(uid);
@@ -374,17 +331,114 @@ export class OfficeState {
         const label = this.seatZone(uid);
         return label !== null && wanted.has(label);
       });
-      const pick = this.pickFromSeats(inArea, electronicsTiles);
+      const pick = this.pickFromSeats(inArea);
       if (pick) return pick;
     }
 
     // Stage 2 — unzoned seats (no area label, or layout has no areas at all).
     const unzoned = freeSeats.filter((uid) => this.seatZone(uid) === null);
-    const pick2 = this.pickFromSeats(unzoned, electronicsTiles);
+    const pick2 = this.pickFromSeats(unzoned);
     if (pick2) return pick2;
 
     // Stage 3 — any free seat.
-    return this.pickFromSeats(freeSeats, electronicsTiles);
+    return this.pickFromSeats(freeSeats);
+  }
+
+  /** Free computer seat, retaining the normal folder Area preference. */
+  private findFreeComputerSeat(folderName?: string): string | null {
+    const candidates = Array.from(this.seats, ([uid, seat]) => ({ uid, seat })).filter(
+      ({ seat }) => !seat.assigned && seat.hasComputer,
+    );
+    if (candidates.length === 0) return null;
+
+    const areaLabels = folderName ? this.areaMappings[folderName] : undefined;
+    if (areaLabels && areaLabels.length > 0) {
+      const wanted = new Set(areaLabels);
+      const inArea = candidates.filter(({ uid }) => {
+        const label = this.seatZone(uid);
+        return label !== null && wanted.has(label);
+      });
+      if (inArea.length > 0) return inArea[Math.floor(Math.random() * inArea.length)].uid;
+    }
+
+    const unzoned = candidates.filter(({ uid }) => this.seatZone(uid) === null);
+    const pool = unzoned.length > 0 ? unzoned : candidates;
+    return pool[Math.floor(Math.random() * pool.length)].uid;
+  }
+
+  /**
+   * Atomically reserve a suitable seat and start walking to it. A missing seat
+   * or route leaves every assignment unchanged.
+   */
+  private seatWorkingAgent(agentId: number): boolean {
+    const ch = this.characters.get(agentId);
+    if (!ch || ch.isSubagent) return false;
+    const oldSeat = ch.seatId ? this.seats.get(ch.seatId) : undefined;
+    if (oldSeat?.hasComputer) return false;
+
+    const targetId = this.findFreeComputerSeat(ch.folderName);
+    if (!targetId) return false;
+    const target = this.seats.get(targetId);
+    if (!target || target.assigned) return false;
+
+    const oldKey = oldSeat ? `${oldSeat.seatCol},${oldSeat.seatRow}` : null;
+    const targetKey = `${target.seatCol},${target.seatRow}`;
+    const oldWasBlocked = oldKey ? this.blockedTiles.delete(oldKey) : false;
+    const targetWasBlocked = this.blockedTiles.delete(targetKey);
+    const path = findPath(
+      ch.tileCol,
+      ch.tileRow,
+      target.seatCol,
+      target.seatRow,
+      this.tileMap,
+      this.blockedTiles,
+    );
+    if (oldWasBlocked && oldKey) this.blockedTiles.add(oldKey);
+    if (targetWasBlocked) this.blockedTiles.add(targetKey);
+    if (path.length === 0) return false;
+
+    target.assigned = true;
+    if (oldSeat) oldSeat.assigned = false;
+    ch.seatId = targetId;
+    ch.path = path;
+    ch.moveProgress = 0;
+    ch.state = CharacterState.WALK;
+    ch.frame = 0;
+    ch.frameTimer = 0;
+    return true;
+  }
+
+  /** Release a seated idle agent only after a standing route is available. */
+  private standIdleAgent(agentId: number): boolean {
+    const ch = this.characters.get(agentId);
+    if (!ch || ch.isSubagent || !ch.seatId) return false;
+    const seat = this.seats.get(ch.seatId);
+    if (!seat) return false;
+    const target = this.closestFreeWalkableTile(ch.tileCol, ch.tileRow);
+    if (!target) return false;
+
+    const seatKey = `${seat.seatCol},${seat.seatRow}`;
+    const wasBlocked = this.blockedTiles.delete(seatKey);
+    const path = findPath(
+      ch.tileCol,
+      ch.tileRow,
+      target.col,
+      target.row,
+      this.tileMap,
+      this.blockedTiles,
+    );
+    if (wasBlocked) this.blockedTiles.add(seatKey);
+    if (path.length === 0) return false;
+
+    seat.assigned = false;
+    ch.seatId = null;
+    ch.path = path;
+    ch.moveProgress = 0;
+    ch.state = CharacterState.WALK;
+    ch.frame = 0;
+    ch.frameTimer = 0;
+    ch.seatTimer = 0;
+    return true;
   }
 
   /** Closest walkable tile to (col,row) not occupied by another character, or null. */
@@ -491,7 +545,12 @@ export class OfficeState {
     if (!skipSpawnEffect) {
       startMatrixEffect(ch, 'spawn');
     }
+    // Creation/restoration does not prove that an agent is working. Start from
+    // the authoritative resting state and let an agentStatus/tool message
+    // replace this debounced reconciliation when activity is actually present.
+    ch.isActive = false;
     this.characters.set(id, ch);
+    this.scheduleActivityReconciliation(id, false);
   }
 
   // ── Greeter ───────────────────────────────────────────────────
@@ -561,6 +620,8 @@ export class OfficeState {
     }
     if (this.selectedAgentId === id) this.selectedAgentId = null;
     if (this.cameraFollowId === id) this.cameraFollowId = null;
+    this.activityTransitionTimers.delete(id);
+    this.pendingActivityStates.delete(id);
     // Start despawn animation instead of immediate delete
     startMatrixEffect(ch, 'despawn');
     ch.bubbleType = null;
@@ -791,13 +852,12 @@ export class OfficeState {
   setAgentActive(id: number, active: boolean): void {
     const ch = this.characters.get(id);
     if (ch) {
+      if (ch.isActive === active && this.pendingActivityStates.get(id) === active) return;
       ch.isActive = active;
+      this.scheduleActivityReconciliation(id, active);
       if (!active) {
-        // Sentinel -1: signals turn just ended, skip next seat rest timer.
-        // Prevents the WALK handler from setting a 2-4 min rest on arrival.
-        ch.seatTimer = -1;
-        ch.path = [];
-        ch.moveProgress = 0;
+        // Keep the agent seated while the idle transition is being debounced.
+        ch.seatTimer = ACTIVITY_TRANSITION_DELAY_SEC;
       }
       this.rebuildFurnitureInstances();
     }
@@ -811,30 +871,7 @@ export class OfficeState {
       if (!ch.isActive || !ch.seatId) continue;
       const seat = this.seats.get(ch.seatId);
       if (!seat) continue;
-      // Find the desk tile(s) the agent faces from their seat
-      const dCol =
-        seat.facingDir === Direction.RIGHT ? 1 : seat.facingDir === Direction.LEFT ? -1 : 0;
-      const dRow = seat.facingDir === Direction.DOWN ? 1 : seat.facingDir === Direction.UP ? -1 : 0;
-      // Check tiles in the facing direction (desk could be 1-3 tiles deep)
-      for (let d = 1; d <= AUTO_ON_FACING_DEPTH; d++) {
-        const tileCol = seat.seatCol + dCol * d;
-        const tileRow = seat.seatRow + dRow * d;
-        autoOnTiles.add(`${tileCol},${tileRow}`);
-      }
-      // Also check tiles to the sides of the facing direction (desks can be wide)
-      for (let d = 1; d <= AUTO_ON_SIDE_DEPTH; d++) {
-        const baseCol = seat.seatCol + dCol * d;
-        const baseRow = seat.seatRow + dRow * d;
-        if (dCol !== 0) {
-          // Facing left/right: check tiles above and below
-          autoOnTiles.add(`${baseCol},${baseRow - 1}`);
-          autoOnTiles.add(`${baseCol},${baseRow + 1}`);
-        } else {
-          // Facing up/down: check tiles left and right
-          autoOnTiles.add(`${baseCol - 1},${baseRow}`);
-          autoOnTiles.add(`${baseCol + 1},${baseRow}`);
-        }
-      }
+      for (const tile of getSeatFacingTiles(seat)) autoOnTiles.add(tile);
     }
 
     if (autoOnTiles.size === 0) {
@@ -1087,6 +1124,21 @@ export class OfficeState {
   }
 
   update(dt: number): void {
+    for (const [id, remaining] of this.activityTransitionTimers) {
+      const next = remaining - dt;
+      if (next > 0) {
+        this.activityTransitionTimers.set(id, next);
+        continue;
+      }
+      this.activityTransitionTimers.delete(id);
+      const desired = this.pendingActivityStates.get(id);
+      if (desired !== undefined) {
+        if (desired) this.seatWorkingAgent(id);
+        else this.standIdleAgent(id);
+        this.pendingActivityStates.delete(id);
+      }
+    }
+
     // Furniture animation cycling
     const prevFrame = Math.floor(this.furnitureAnimTimer / FURNITURE_ANIM_INTERVAL_SEC);
     this.furnitureAnimTimer += dt;

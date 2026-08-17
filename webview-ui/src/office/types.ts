@@ -53,6 +53,8 @@ export interface Seat {
   seatRow: number;
   /** Direction character faces when sitting (toward adjacent desk) */
   facingDir: Direction;
+  /** Whether the shared electronics-facing scan reaches a computer from this seat. */
+  hasComputer: boolean;
   assigned: boolean;
 }
 

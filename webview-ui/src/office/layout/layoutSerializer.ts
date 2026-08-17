@@ -1,4 +1,5 @@
 import type { ColorValue } from '../../components/ui/types.js';
+import { AUTO_ON_FACING_DEPTH, AUTO_ON_SIDE_DEPTH } from '../../constants.js';
 import { getColorizedSprite } from '../colorize.js';
 import type {
   FurnitureInstance,
@@ -160,6 +161,30 @@ function orientationToFacing(orientation: string): Direction {
   }
 }
 
+/** Tiles reached by the electronics auto-on scan for a seat. */
+export function getSeatFacingTiles(
+  seat: Pick<Seat, 'seatCol' | 'seatRow' | 'facingDir'>,
+): Set<string> {
+  const dCol = seat.facingDir === Direction.RIGHT ? 1 : seat.facingDir === Direction.LEFT ? -1 : 0;
+  const dRow = seat.facingDir === Direction.DOWN ? 1 : seat.facingDir === Direction.UP ? -1 : 0;
+  const tiles = new Set<string>();
+  for (let d = 1; d <= AUTO_ON_FACING_DEPTH; d++) {
+    tiles.add(`${seat.seatCol + dCol * d},${seat.seatRow + dRow * d}`);
+  }
+  for (let d = 1; d <= AUTO_ON_SIDE_DEPTH; d++) {
+    const col = seat.seatCol + dCol * d;
+    const row = seat.seatRow + dRow * d;
+    if (dCol !== 0) {
+      tiles.add(`${col},${row - 1}`);
+      tiles.add(`${col},${row + 1}`);
+    } else {
+      tiles.add(`${col - 1},${row}`);
+      tiles.add(`${col + 1},${row}`);
+    }
+  }
+  return tiles;
+}
+
 /** Generate seats from chair furniture.
  *  Facing priority: 1) chair orientation, 2) adjacent desk, 3) forward (DOWN). */
 export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
@@ -167,12 +192,15 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
 
   // Build set of all desk tiles
   const deskTiles = new Set<string>();
+  const electronicsTiles = new Set<string>();
   for (const item of furniture) {
     const entry = getCatalogEntry(item.type);
-    if (!entry || !entry.isDesk) continue;
+    if (!entry) continue;
     for (let dr = 0; dr < entry.footprintH; dr++) {
       for (let dc = 0; dc < entry.footprintW; dc++) {
-        deskTiles.add(`${item.col + dc},${item.row + dr}`);
+        const tile = `${item.col + dc},${item.row + dr}`;
+        if (entry.isDesk) deskTiles.add(tile);
+        if (entry.category === 'electronics') electronicsTiles.add(tile);
       }
     }
   }
@@ -215,13 +243,18 @@ export function layoutToSeats(furniture: PlacedFurniture[]): Map<string, Seat> {
 
         // First seat uses chair uid (backward compat), subsequent use uid:N
         const seatUid = seatCount === 0 ? item.uid : `${item.uid}:${seatCount}`;
-        seats.set(seatUid, {
+        const seat: Seat = {
           uid: seatUid,
           seatCol: tileCol,
           seatRow: tileRow,
           facingDir,
+          hasComputer: false,
           assigned: false,
-        });
+        };
+        seat.hasComputer = Array.from(getSeatFacingTiles(seat)).some((tile) =>
+          electronicsTiles.has(tile),
+        );
+        seats.set(seatUid, seat);
         seatCount++;
       }
     }
