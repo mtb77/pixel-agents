@@ -1,9 +1,13 @@
 /**
  * Provider abstraction for AI agent tools.
  *
- * Only HookProvider ships today (Claude Code). Transcript-polling and push-based
- * provider types will be added when a real second provider (Codex, Goose,
- * Discord, etc.) actually lands, derived from that provider's needs rather than
+ * HookProvider ships today (Claude Code). StreamProvider is the seam for a
+ * push-based provider whose events originate outside this process (e.g. an
+ * external polling bridge translating some other system's activity into
+ * AgentEvents) -- this repo defines the interface and gates its lifecycle on
+ * office-client presence; it does not implement or register a concrete
+ * StreamProvider itself. A polling-only FileProvider type will be added when a
+ * real one actually lands, derived from that provider's needs rather than
  * speculation.
  */
 
@@ -147,5 +151,43 @@ export interface HookProvider {
   readonly team?: TeamProvider;
 }
 
-// TODO(provider type taxonomy): FileProvider (polling-only CLIs) and StreamProvider
-// (push-based external services) will be added alongside the first real second provider
+// ── Stream-based Provider (push-based external services) ─────
+
+/**
+ * Minimal integration boundary for a provider whose AgentEvents are pushed
+ * from outside this process rather than pulled from a CLI's hooks/transcripts.
+ * Kept deliberately small: unlike HookProvider it has no raw-payload
+ * normalization step (the provider does that on its own side before ever
+ * calling `emit`), no file-fallback surface, and no team extension.
+ *
+ * Lifecycle is gated by office-client presence, not by process lifetime: the
+ * server calls `start` once the first client connects and awaits the returned
+ * disposer once the last client disconnects. A provider backed by external
+ * polling relies on this gate to pause its polling at zero clients rather than
+ * running unobserved.
+ */
+export interface StreamProvider {
+  readonly kind: 'stream';
+  readonly id: string;
+  readonly displayName: string;
+  /** Protocol version. Server refuses to dispatch events from a provider whose
+   *  version it doesn't understand. Bump on every breaking change to AgentEvent
+   *  / StreamProvider. Start at 1. */
+  readonly protocolVersion: number;
+
+  /** Begin producing events, calling `emit` for each one. Resolves with a
+   *  disposer the server awaits once the last office client disconnects; the
+   *  provider must have stopped producing events by the time it resolves. */
+  start(emit: (event: AgentEvent) => void): Promise<() => Promise<void>>;
+
+  /** Tools that should show the "reading" character animation instead of
+   *  "typing" (mirrors HookProvider.readingTools). */
+  readonly readingTools: ReadonlySet<string>;
+  /** Format tool status for display, by name only. Must never render tool
+   *  input or other payload text -- unlike HookProvider.formatToolStatus,
+   *  this signature has no `input` parameter to leak. */
+  formatToolStatus(toolName: string): string;
+}
+
+// TODO(provider type taxonomy): FileProvider (polling-only CLIs) will be added
+// alongside the first real such provider.

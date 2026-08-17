@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import type { StreamProvider } from '../../core/src/provider.js';
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import type {
@@ -20,6 +21,7 @@ import {
 import { createHttpServer } from './httpServer.js';
 import type { ServerConfig } from './serverConfig.js';
 import { isServerConfig, isServerTarget } from './serverConfig.js';
+import type { StreamEventSink } from './streamProviderLifecycle.js';
 
 export type { ServerConfig } from './serverConfig.js';
 
@@ -69,6 +71,8 @@ export class PixelAgentsServer {
     assetCache?: AssetCache;
     onSetHooksEnabled?: SetHooksEnabledSideEffect;
     onReloadAssets?: ReloadAssetsSideEffect;
+    streamProviders?: readonly StreamProvider[];
+    onStreamEvent?: StreamEventSink;
   }): Promise<ServerConfig> {
     const embedded = options?.embedded ?? true;
     const wantsSpa = !embedded;
@@ -106,6 +110,8 @@ export class PixelAgentsServer {
       onHookEvent: (providerId, event) => this.callback?.(providerId, event),
       onSetHooksEnabled: options?.onSetHooksEnabled,
       onReloadAssets: options?.onReloadAssets,
+      streamProviders: options?.streamProviders,
+      onStreamEvent: options?.onStreamEvent,
     });
 
     this.app = app;

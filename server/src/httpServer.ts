@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import Fastify from 'fastify';
 
+import type { StreamProvider } from '../../core/src/provider.js';
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import type {
@@ -19,6 +20,8 @@ import {
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
+import type { StreamEventSink } from './streamProviderLifecycle.js';
+import { StreamProviderLifecycle } from './streamProviderLifecycle.js';
 import type { AgentState } from './types.js';
 
 /** Options for creating the HTTP + WebSocket server. */
@@ -45,6 +48,14 @@ export interface HttpServerOptions {
   onSetHooksEnabled?: SetHooksEnabledSideEffect;
   /** Invoked when an external asset directory is added/removed. Standalone reloads + re-broadcasts assets here. */
   onReloadAssets?: ReloadAssetsSideEffect;
+  /** StreamProviders to gate on office-client presence (see StreamProviderLifecycle).
+   *  None ship in this repo -- a host composing the server with a real one (e.g. an
+   *  external polling bridge) passes it here alongside `onStreamEvent`. */
+  streamProviders?: readonly StreamProvider[];
+  /** Receives events emitted by any registered stream provider. Never wired into
+   *  the Claude heuristic/transcript-fallback paths -- those only ever see the
+   *  bound HookProvider via onHookEvent. */
+  onStreamEvent?: StreamEventSink;
 }
 
 /** Result of createHttpServer(). */
@@ -84,9 +95,17 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
 
   // ── Routes ──────────────────────────────────────────────────
 
+  // One lifecycle gate per server instance (not per connection): shared across
+  // every WebSocket handshake so the client count reflects the whole office,
+  // not a single socket.
+  const streamLifecycle =
+    options.streamProviders && options.streamProviders.length > 0
+      ? new StreamProviderLifecycle(options.streamProviders, options.onStreamEvent ?? (() => {}))
+      : null;
+
   registerHealthRoute(app);
   registerHookRoute(app, options);
-  registerWebSocketRoute(app, options);
+  registerWebSocketRoute(app, options, streamLifecycle);
 
   // ── Listen ──────────────────────────────────────────────────
 
@@ -142,7 +161,11 @@ function registerHookRoute(app: FastifyInstance, options: HttpServerOptions): vo
 
 // ── WebSocket ──────────────────────────────────────────────────
 
-function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions): void {
+function registerWebSocketRoute(
+  app: FastifyInstance,
+  options: HttpServerOptions,
+  streamLifecycle: StreamProviderLifecycle | null,
+): void {
   app.get('/ws', { websocket: true }, (socket, request) => {
     // CONNECTION gate. Embedded (VS Code) requires the Bearer token. Standalone
     // requires a same-origin handshake instead (isAllowedWebSocketOrigin), so a
@@ -167,6 +190,10 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
     const privileged = options.embedded || standaloneTokenValid(request.url, options.token);
 
     const { store } = options;
+
+    // This connection passed the gate above, so it counts as an office client
+    // for stream-provider lifecycle purposes (first-in starts, last-out stops).
+    streamLifecycle?.clientConnected();
 
     // Pipe store events to WebSocket client
     const onAgentAdded = (id: number, agent: AgentState) => {
@@ -221,6 +248,7 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
       store.off('agentAdded', onAgentAdded);
       store.off('agentRemoved', onAgentRemoved);
       store.off('broadcast', onBroadcast);
+      streamLifecycle?.clientDisconnected();
     });
   });
 }

@@ -145,8 +145,15 @@ async function main(): Promise<void> {
     // Create runtime first (before server.start, so we can pass it in)
     const runtime = new AgentRuntime(store, claudeProvider);
 
-    // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents
+    // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents.
+    // The runtime is constructed with a single bound HookProvider (claudeProvider
+    // below), so `runtime.handleHookEvent` always processes an event as Claude's
+    // heuristic/transcript-fallback path expects. Guard on providerId here rather
+    // than relying on that implicitly: a stream provider's events arrive in-process
+    // via StreamProvider.start(emit), never through this HTTP route, but a stray
+    // POST tagged with a non-Claude providerId must not be reinterpreted as Claude.
     server.onHookEvent((providerId, event) => {
+      if (providerId !== claudeProvider.id) return;
       runtime.handleHookEvent(providerId, event);
     });
 
